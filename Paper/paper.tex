@@ -1,0 +1,755 @@
+% Pandoc template for an IEEE conference paper. It follows the official IEEEtran conference template (bare_conf.tex). The Makefile fills in the template variables from draft.md.
+\documentclass[conference]{IEEEtran}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{textcomp}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{soul}
+\sethlcolor{yellow}
+\usepackage{url}
+\usepackage{cite}
+
+% Helper commands that pandoc output can use.
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\makeatletter
+\newsavebox\pandoc@box
+\newcommand*\pandocbounded[1]{%
+  \sbox\pandoc@box{#1}%
+  \Gscale@div\@tempa{\textheight}{\dimexpr\ht\pandoc@box+\dp\pandoc@box\relax}%
+  \Gscale@div\@tempb{\linewidth}{\wd\pandoc@box}%
+  \ifdim\@tempb\p@<\@tempa\p@\let\@tempa\@tempb\fi
+  \ifdim\@tempa\p@<\p@\scalebox{\@tempa}{\usebox\pandoc@box}%
+  \else\usebox{\pandoc@box}%
+  \fi%
+}
+\def\fps@figure{tbp}
+\makeatother
+
+% The IEEE template does not load hyperref, so we give simple versions of the link commands that pandoc may write.
+\providecommand{\hypertarget}[2]{#2}
+\providecommand{\texorpdfstring}[2]{#1}
+\providecommand{\href}[2]{#2 (\url{#1})}
+
+
+
+\begin{document}
+
+\title{Does Pseudo-Labeling Help Rare CWE Classes? An Empirical Study
+with CodeBERT}
+
+\author{
+\IEEEauthorblockN{Marten Weijer}
+\IEEEauthorblockA{\textit{Dept. of Computer Information Science}\\
+\textit{Minnesota State University, Mankato}\\
+Mankato, Minnesota\\
+\url{marten.weijer@mnsu.edu}}
+\and
+\IEEEauthorblockN{Sadman Sakib Abdullah}
+\IEEEauthorblockA{\textit{Dept. of Computer Information Science}\\
+\textit{Minnesota State University, Mankato}\\
+Mankato, Minnesota\\
+\url{sadmansakib.abdullah.2@mnsu.edu}}
+\and
+\IEEEauthorblockN{Suboh Alkhushayni}
+\IEEEauthorblockA{\textit{Dept. of Computer Information Science}\\
+\textit{Minnesota State University, Mankato}\\
+Mankato, Minnesota\\
+\url{suboh.alkhushayni@mnsu.edu}}
+}
+
+\maketitle
+
+\begin{abstract}
+Labeled vulnerability datasets have many examples for some Common
+Weakness Enumeration (CWE) classes but only a few for rare ones. It is
+not clear whether semi-supervised learning, which also uses unlabeled
+data, helps these rare classes. We predict one CWE class for each
+vulnerable function. We test one round of pseudo-labeling: a model
+predicts labels for unlabeled functions, and a new model trains on the
+most confident predictions. We use CodeBERT, a model pretrained on code,
+and train on 82 CWE classes from DiverseVul with label budgets of 5\%,
+10\%, and 25\%. We test on DiverseVul, BigVul, and MegaVul without
+further training, which gives nine settings with five seeds each. We
+compare with two supervised baselines on the same labeled sets: a
+standard 10-epoch baseline and a long baseline with about as many
+training steps as pseudo-labeling. Pseudo-labeling has a higher mean
+macro-F1, which weights every class equally, than the standard baseline
+in all nine settings. But it has a lower mean macro-F1 than the long
+baseline in all nine, and it wins only 10 of 45 paired runs against it.
+We find no clear benefit for rare classes. On DiverseVul, rare-class F1
+stays near zero for all models, even with all labels. On BigVul and
+MegaVul, pseudo-labeling has a lower mean rare-class F1 than the long
+baseline at every label budget.
+To check the low scores, we also test a majority-class baseline, TF-IDF with logistic regression, and frozen CodeBERT with logistic regression on the same project split and 82 classes. Frozen CodeBERT reaches 0.016 test macro-F1 on that split, and 0.241 on a random split. The project split, not a failed fine-tuning run, is the main reason for the low scores.
+Scores are low, and these findings apply to the tested method and
+retained classes. They support reporting supervised baselines with
+similar planned training steps.
+\end{abstract}
+
+\begin{IEEEkeywords}
+software vulnerability detection, CWE classification, semi-supervised
+learning, pseudo-labeling, class imbalance
+\end{IEEEkeywords}
+
+\section{Introduction}\label{introduction}
+
+Predicting a vulnerability's type can help describe what is wrong with
+code. However, labeled Common Weakness Enumeration (CWE) datasets
+contain many examples of common types and few examples of rare ones
+\cite{wen2023livable,zhou2023devil}. A model trained on a small labeled
+set may struggle with these rare classes. Unlabeled code could provide
+more training examples through semi-supervised learning (SSL), which
+combines labeled and unlabeled data.
+
+A systematic mapping of label-efficient vulnerability detection research
+through September 2025 found that semi-supervised methods mainly address
+binary detection: deciding whether code is vulnerable. Work on CWE
+classification with few labels mainly uses few-shot and meta-learning
+methods, which aim to learn from a few examples or adapt quickly to new
+tasks \cite{khalal2026labels}. It remains unclear whether adding
+unlabeled training data improves rare, function-level CWE classes when
+only a small labeled set is available.
+
+Our task is to predict a single CWE type for each vulnerable function.
+We compare two approaches. The first is supervised training with
+CodeBERT, a model pretrained on code. The second adds one round of
+pseudo-labeling: a model first predicts labels for unlabeled code, and
+then a new model learns from a selected set of those predictions. Both
+approaches use the same small labeled sets. Our main supervised
+comparison is the long baseline. It trains for longer, so its number of
+training steps matches the steps we planned for SSL. We also report the
+standard baseline, which trains for 10 epochs. All training and tuning
+happens on DiverseVul, a dataset of vulnerable code functions. We then
+test the models on two other vulnerability datasets, BigVul and MegaVul,
+with no extra training or tuning. We try three label budgets, using 5\%,
+10\% or 25\% of the training labels. With three budgets and three
+datasets, we get nine settings in total.
+
+Our main finding is about the baseline. We measure results with
+macro-F1. It combines precision and recall for each class and then gives
+every class the same weight in the average. In all nine settings, SSL
+gets a higher mean macro-F1 than the standard baseline. But the long
+baseline does better than SSL in every one of those nine settings. We
+also see no clear benefit for rare classes. On DiverseVul, rare-class
+scores are close to zero, and on both target datasets the long baseline
+has higher mean rare-class scores than SSL. These results apply only to
+this pseudo-labeling method and the set of classes we kept.
+The absolute scores are also low. A model trained on all labels reaches only 0.031 macro-F1 on the DiverseVul test set. On the same split, a majority-class baseline, TF-IDF with logistic regression, and frozen CodeBERT with logistic regression score 0.002, 0.025, and 0.016. The same frozen CodeBERT setup scores 0.241 on a random split. The project-wise split removes leakage that made the random-split score look much higher.
+
+This paper answers three research questions:
+
+\textbf{RQ1:} How does one round of pseudo-labeling compare with
+supervised training for CWE-type classification on the same small
+labeled set, including a baseline with a similar number of training
+steps?
+
+\textbf{RQ2:} How do the differences between pseudo-labeling and
+supervised training vary between rare and common CWE classes?
+
+\textbf{RQ3:} Do these differences also appear on other datasets without
+further training or tuning?
+
+The main contributions of this paper are:
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{An empirical comparison:} We compare one-round pseudo-labeling
+  with supervised CodeBERT training for CWE classification at three
+  label budgets. We test on DiverseVul, BigVul and MegaVul, and analyze
+  rare and common classes separately.
+\item
+  \textbf{A baseline finding:} SSL has higher mean macro-F1 than a
+  10-epoch supervised baseline in all nine settings, but lower mean
+  macro-F1 than a long baseline with similar training steps in all nine.
+  SSL studies should report such a baseline.
+\item
+  \textbf{A rare-class finding:} SSL gives no clear benefit on rare
+  classes. On DiverseVul, rare-class scores are near zero even with all
+  labels, so the clearest check is MegaVul, where SSL still has lower
+  mean rare-class F1 than the long baseline.
+\item
+  \textbf{A split diagnosis:}
+  On the same project-wise split and 82 classes, frozen CodeBERT with logistic regression reaches 0.016 test macro-F1. A random split of the same functions reaches 0.241. A fine-tuned model trained on all labels fits the training set well, with 0.778 train macro-F1, but still scores 0.031 on test. The low scores come from a hard split, not from a broken fine-tuning pipeline.
+\end{itemize}
+
+\section{Background and Related Work}\label{related-work}
+
+\subsection{CWE-Type Classification and Class
+Imbalance}\label{cwe-type-classification-and-class-imbalance}
+
+The Common Weakness Enumeration (CWE) sorts software weaknesses into
+types \cite{mitre-cwe}. Binary vulnerability detection only asks whether
+a piece of code is vulnerable. CWE-type classification goes one step
+further and asks what kind of weakness the code has. In this study, all
+the functions we classify are already known to be vulnerable, so
+non-vulnerable code is not one of the target classes. CWE datasets are
+usually long-tailed. A few types have lots of examples, and many others
+have only a handful \cite{wen2023livable,zhou2023devil}. Models tend to
+struggle with these rare types. Zhou et al.~found that code models like
+CodeBERT do much worse on rare labels than on common ones, and
+vulnerability type prediction was one of the tasks they tested
+\cite{zhou2023devil}. Yang et al.~saw the same problem: when one model
+is trained on all vulnerability types, it does badly on the rare CWE
+types \cite{yang2025moevd}. But the number of examples is only part of
+the story. Chen et al.~report that some CWE types are easy to detect
+even with little training data, while others stay hard even when more
+data is added \cite{chen2023diversevul}. We think this makes per-class
+results more useful, so we report results for each CWE class rather than
+only looking at groups of rare and common classes.
+
+Supervised methods deal with this imbalance in three main ways. Some
+change the training objective. LIVABLE, for example, combines
+information from the code structure and the code sequence, and it adds a
+module that changes how much weight each class gets during training
+\cite{wen2023livable}. MARGIN works on the space between classes and on
+how prediction scores are scaled. It also changes the representations
+the model uses to identify each class \cite{zhang2026margin}. Other
+methods add more training examples. Chen et al.~use adversarial
+training, which makes small changes to the internal representations of
+the code, and train it together with two tasks: predicting the
+vulnerability type and finding the vulnerable lines \cite{chen2025edat}.
+The last group uses the links between CWE types. Ji et al.~apply
+hierarchical contrastive learning, so related CWE types end up with
+representations that are close to each other \cite{ji2024contrastive}.
+MoEVD uses these links in a different way. It first predicts the CWE
+type of a function. Then it passes the function to an expert model for
+that type, or for a group of types \cite{yang2025moevd}.
+
+All of these methods learn only from labeled data. And when they are
+evaluated, the rarest classes often get special treatment. LIVABLE and
+MARGIN both report results by class frequency, but they handle rare
+classes in different ways. LIVABLE puts every class with fewer than 20
+examples into a single ``Remain'' class. MARGIN keeps only the 10 to 15
+most common CWE types in each dataset and leaves the rest out. So we
+usually don't see separate results for the rarest CWE types at all. We
+want to find out if adding unlabeled data helps, and we are most
+interested in whether it helps with these rare types.
+
+\subsection{Semi-Supervised Learning for Vulnerability
+Tasks}\label{semi-supervised-learning-for-vulnerability-tasks}
+
+Semi-supervised learning trains a model on both labeled and unlabeled
+examples. A common way to do this is pseudo-labeling. The model predicts
+labels for the unlabeled examples, and some of these predictions are
+then used as training labels \cite{lee2013pseudo}. Khalal et
+al.~reviewed studies on label-efficient vulnerability detection
+published up to September 2025 \cite{khalal2026labels}. They found that
+most semi-supervised methods deal with binary detection. SSVD, proposed
+by Yu et al., is one example: a teacher model picks the pseudo-labels,
+and a student model learns from them in a way that reduces the harm from
+wrong labels \cite{yu2025less}. PILOT takes a different route. It learns
+from labeled vulnerable code and unlabeled code, so it does not need any
+examples labeled as non-vulnerable \cite{wen2023pilot}. But both methods
+only say whether code is vulnerable. They do not predict the CWE type.
+Work on CWE types with few labels has mostly used few-shot learning or
+meta-learning. Few-shot methods learn a new class from just a few
+examples. With meta-learning, the goal is to learn how to adapt quickly
+to new tasks. Our problem does not fit either group well. Every CWE
+class already has some labeled examples, and on top of that we have a
+large pool of unlabeled code.
+
+SURF is closer to our work, because it uses semi-supervised learning for
+targets with more than two classes \cite{pei2025surf}. It uses both the
+text and the structure of the code to predict seven Common Vulnerability
+Scoring System (CVSS) metrics, for example severity. Each metric has
+three classes. SURF creates pseudo-labels and applies weak and strong
+changes to its inputs. The authors try different amounts of labeled
+training data and discuss the problem of strong class imbalance. They
+also test their method on other datasets. But CVSS metrics measure how
+risky a vulnerability is. They say nothing about its CWE type. Our study
+is different from SURF in two ways. First, we predict CWE types. Second,
+we check whether semi-supervised learning helps rare classes more than
+common ones.
+
+\subsection{Class Imbalance in
+Pseudo-Labeling}\label{class-imbalance-in-pseudo-labeling}
+
+Unlabeled code can give us more training examples than the small labeled
+set alone. But pseudo-labeling does not always help rare classes. A
+model may give common labels to rare-class examples, or it may pick too
+few rare-class examples for the next round of training. CReST looks at
+this problem on image datasets. It shows that models often miss many
+minority-class examples, even though their predictions for those classes
+are usually right. To fix this, the method takes more pseudo-labeled
+examples from the predicted minority classes, and this improves results
+when the classes are imbalanced \cite{wei2021crest}. So it seems that
+two things matter: how many pseudo-labels we select, and how many of
+them are correct. We do not yet know if confidence-based pseudo-labeling
+finds enough useful examples to help with rare CWE classes.
+
+Previous studies look at different parts of this problem. LIVABLE and
+MARGIN focus on supervised CWE classification when some classes have far
+fewer examples than others \cite{wen2023livable,zhang2026margin}. SSVD
+and PILOT use unlabeled code, but only for binary vulnerability
+detection. SURF uses it to predict CVSS metrics
+\cite{yu2025less,wen2023pilot,pei2025surf}. None of these studies
+directly shows what happens to rare, function-level CWE classes when we
+add unlabeled training data and only have a few labels.
+
+This is the gap we try to fill. We start with the same small labeled set
+and compare two approaches: normal supervised training and
+pseudo-labeling, where the model labels new examples only when it is
+confident enough. Then we look at how the results for each class change
+depending on how common that class is. We also test whether any gains or
+losses still hold on other datasets, without extra training or tuning.
+
+\section{Methodology}\label{methodology}
+
+\subsection{Data and Task Setup}\label{data-and-task-setup}
+
+We compare supervised models with semi-supervised learning (SSL), which
+uses labeled and unlabeled data. We predict one CWE type from the code
+of a vulnerable function. DiverseVul provides training, validation, and
+test data for RQ1--RQ2 \cite{chen2023diversevul}. BigVul
+\cite{fan2020bigvul} and MegaVul \cite{ni2024megavul} provide external
+evaluation data for RQ3, with no training or tuning on either dataset.
+
+We load DiverseVul from Hugging Face revision \texttt{98c294b} and keep
+vulnerable functions with code and CWE labels. For multiple labels, we
+select the least frequent CWE across the label lists of all kept
+functions. If two CWEs are equally rare, we keep the one that comes
+first in the list. This rule gives more examples to rare classes. But it
+can choose a general CWE over a more specific one. Removing classes with
+one example leaves 16,098 functions, 139 classes, and 739 projects.
+
+Each project belongs to only one split: 70\% of projects go to training,
+15\% to validation, and the rest to test. We chose split seed 1060
+because it gave the most rare classes in test while keeping each split
+close to its 70/15/15 share of functions. For this choice, we defined
+rare as fewer than 20 training functions.
+
+Of the 139 classes, 129 appear in training. We retain the 82 with at
+least 10 training functions and remove other classes from every split.
+This removes 47 training classes but only 212 training functions (about
+2\%). We chose this filter after seeing the test results of an earlier
+reference model trained on all labels and all 129 classes, and kept the
+project assignments. In the final setup, rare classes have 10--49
+functions in the full training split. Common classes have at least 50.
+These groups stay fixed across budgets and datasets. Some rare classes
+have very few test functions from very few commits. For 14 of the 33
+rare test classes, all test functions come from just one commit per
+class. Their scores can vary greatly between runs.
+
+For BigVul and MegaVul, we keep vulnerable function versions with code
+and valid numeric CWE labels. We apply the single-label rule using each
+target's frequencies. We remove duplicate code and matches to any
+vulnerable DiverseVul function after whitespace removal, then retain
+only the 82 supported classes. This step removes only exact copies, so
+similar code can remain. Also, 16--19\% of the target functions come
+from projects in the DiverseVul training split. RQ3 therefore tests new
+functions, but not always new projects. Table~\ref{tbl:datasets} gives
+final counts. We do not perform additional duplicate removal within
+DiverseVul.
+
+\begin{table}[tbp]
+\centering
+\caption{Counts after cleaning and filtering. Rarity uses DiverseVul training
+counts.}
+\label{tbl:datasets}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{\dimexpr 0.338\linewidth - 2\tabcolsep\relax}>{\raggedleft\arraybackslash}p{\dimexpr 0.206\linewidth - 2\tabcolsep\relax}>{\raggedleft\arraybackslash}p{\dimexpr 0.176\linewidth - 2\tabcolsep\relax}>{\raggedright\arraybackslash}p{\dimexpr 0.279\linewidth - 2\tabcolsep\relax}@{}}
+\toprule
+Dataset / split & Functions & Classes & Rare classes / functions \\
+\midrule
+DiverseVul training & 11,484 & 82 & 47 / 1,110 \\
+DiverseVul validation & 1,689 & 55 & 21 / 136 \\
+DiverseVul test & 2,424 & 65 & 33 / 306 \\
+BigVul evaluation & 4,975 & 55 & 24 / 297 \\
+MegaVul evaluation & 10,394 & 77 & 44 / 1,275 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Label Budgets and Supervised
+Models}\label{label-budgets-and-supervised-models}
+
+For each training class of size \(n\), we keep
+\(\max(1, \lfloor fn+0.5 \rfloor)\) labels at fraction
+\(f\in\{0.05,0.10,0.25\}\). This gives 580, 1,154, and 2,883 labeled
+functions. Seeds 0--4 control sampling and model initialization. Within
+each seed, the labeled sets are nested: each smaller budget is part of
+the next. The supervised baselines and the SSL model of each run use the
+same labeled set and seed. The other training functions form the
+unlabeled pool. We hide their labels from the models and use them only
+to check how many pseudo-labels are correct. The pool contains only
+vulnerable functions from known training classes and projects, a
+favorable setting for SSL. The validation set keeps all its labels, and
+we use it to choose the best model. It has more labels than the 5\% and
+10\% training sets.
+
+We fine-tune CodeBERT \cite{feng2020codebert} with a classification
+layer that outputs one score for each of the 82 classes. We use the
+\texttt{microsoft/codebert-base} checkpoint. CodeBERT reads at most 512
+tokens (pieces of code text); we cut longer functions at the end.
+This cut removes the end of 53.8\% of training functions and 71.1\% of test functions. The median lengths are 579 and 1,002 tokens.
+We use cross-entropy loss, which penalizes wrong predictions, and give
+examples from less common classes more weight. The weight is
+\(N/(82n_c)\) for class \(c\), where \(N\) is the training-set size and
+\(n_c\) its class count.
+Every CodeBERT model in this paper uses this class-weighted loss. That includes the standard baseline, the long baseline, the SSL model, and the reference model trained on all labels.
+
+The standard baseline uses Hugging Face Trainer with AdamW, batch size
+16, learning rate \(2\times10^{-5}\), no weight decay, and 10 epochs.
+During warmup, the first 10\% of training steps, the learning rate
+gradually increases. It then decreases linearly. Three pilot checks
+using all training labels and validation scores led us to choose class
+weights, warmup, 10 epochs, and a learning rate of \(5\times10^{-5}\).
+In the first full run with 82 classes, three small-label runs had loss
+near random guessing. We lowered the rate to \(2\times10^{-5}\) because
+of training loss, not test scores. After each epoch, we save a
+checkpoint (model weights) and select the one with the best validation
+macro-F1. We do not stop training early. We also train one reference
+model on all training labels with seed 0. We did not save it, so we do
+not test it on BigVul or MegaVul.
+
+The long baseline is our main supervised comparison for all three RQs.
+It trains on the same labeled sample for 48, 28, or 16 epochs. We
+multiply 10 by the size of the SSL training set divided by the
+labeled-set size, then round to get the number of epochs. This matches
+SSL steps within about 3\%. Other settings and checkpoint rules stay the
+same. We added this control after inspecting test results; we also
+report the standard baseline, which was part of the original plan.
+
+\subsection{Semi-Supervised Learning}\label{semi-supervised-learning}
+
+We use one round of pseudo-labeling. A pseudo-label is a label that the
+model predicts for an unlabeled function \cite{lee2013pseudo}. The
+standard baseline model of the same run, from the epoch with the best
+validation score, predicts probabilities for the unlabeled pool. Each
+function receives its highest-probability class as its pseudo-label and
+that probability as confidence. We select the top 20\% globally, rounded
+down, with no class quotas: 2,180, 2,066, and 1,720 functions across the
+three budgets. An earlier threshold of 0.5 gave no selections in 10 of
+15 runs. We fixed the 20\% share for the final experiments without
+tuning it on validation scores; selection can therefore include
+low-confidence predictions.
+
+We train a new model from pretrained CodeBERT weights on the combined
+set for 10 epochs, using the paired seed and standard training settings.
+Within each class, true and pseudo-labels receive equal loss weight. We
+calculate class weights again on the labeled and pseudo-labeled data
+together. SSL therefore changes both the training data and the class
+weights. We check pseudo-label precision (the share correct) using
+hidden labels, overall and by predicted rare/common group, and report
+selected counts.
+
+\subsection{Evaluation Protocol}\label{evaluation-protocol}
+
+For each class, precision is the share of predictions for that class
+that are correct. Recall is the share of the class's functions that the
+model correctly identifies. F1 combines the two. Macro-F1 averages class
+F1 equally over classes with true examples in each evaluation set,
+including the 55 validation classes used for checkpoint selection. If F1
+cannot be calculated for a class, we count it as zero. Predictions
+always use all 82 training classes; predicting an absent evaluation
+class counts as an error for the true class. We also average F1 within
+rare/common groups present in each set.
+
+\subsection{Diagnosis of Low Absolute
+Scores}\label{diagnosis-of-low-absolute-scores}
+
+The reference model trained on all labels reaches only 0.031 test macro-F1. We therefore add three checks on the same project split and the same 82 classes. None of them fine-tunes CodeBERT. A majority-class baseline always predicts the most common training class. TF-IDF with logistic regression uses word and word-pair counts from the full function, with balanced class weights. Frozen CodeBERT does not update CodeBERT. It turns each function into one vector from the first token, using at most 512 tokens, and a logistic regression learns the class. This is the setup from Presentation 1. We also run that frozen model on a random 80/20 split of the same functions. Finally, we train the all-labels reference model again with seed 0 and record its training scores and test predictions. These checks ask whether the low scores come from the project split or from a failure of fine-tuning.
+
+For RQ1, the main gain is SSL minus long baseline; we also report SSL
+minus standard baseline. Scores and paired-seed gains use means and
+sample standard deviations over five seeds. We count a win when SSL has
+a strictly higher score than the baseline, before rounding, and report
+wins out of five seeds. The reference model is a single run, so it has
+no standard deviation. We use no significance tests.
+
+For RQ2, we compare rare/common gains against both baselines. The
+per-class plot (Fig.~\ref{fig:ssl-gain-vs-long}) shows mean
+SSL-minus-long-baseline gains against training frequency. We use the
+reference model's rare-class F1 to check for a floor effect. Scores near
+zero can make small gains hard to measure. We use no correlation test.
+
+For RQ3, we apply the same selected checkpoints and comparisons to all
+cleaned target functions without updates or target-based selection.
+Rare/common groups still use DiverseVul counts. The datasets contain
+different classes, so we cannot directly compare macro-F1 between them.
+
+\section{Results}\label{results}
+
+Table~\ref{tbl:overall-results} gives macro-F1 for the three models on
+DiverseVul test, BigVul, and MegaVul. The long baseline is our main
+comparison. Absolute scores are low for every model. Even the reference
+model trained on all DiverseVul training labels reaches a macro-F1 of
+only 0.031 on DiverseVul test. Small differences between models should
+therefore be read with care.
+
+\subsection{Diagnosis: Project Split Versus
+Fine-Tuning}\label{diagnosis-project-split-versus-fine-tuning}
+
+On the project-wise DiverseVul test set, the majority-class baseline reaches 0.002 macro-F1. TF-IDF with logistic regression reaches 0.025. Frozen CodeBERT with logistic regression reaches 0.016. A new run of the all-labels CodeBERT model reaches 0.031 test macro-F1 and 0.063 common-class F1, and it scores zero on all 33 rare test classes. The same frozen CodeBERT model reaches 0.241 test macro-F1 on a random split of the same functions. The project split removes leakage between projects. Fine-tuning is not the weak step. The all-labels model reaches 0.778 macro-F1 and 0.602 accuracy on the training set, so it learns the training functions, but it does not carry that score to new projects. On the project split, fine-tuned CodeBERT is also higher than frozen CodeBERT, 0.031 against 0.016. We read the SSL results below against this low but real score level.
+
+The most common mistakes stay inside related memory-safety types. For example, true CWE-125 is often predicted as CWE-190 or CWE-787. We also read three wrong test functions. One long image function has true label CWE-119 and predicted label CWE-190. Two others have true label CWE-703 and predicted labels CWE-399 and CWE-401. These errors look like nearby CWE types, not like a model that failed to train.
+
+\begin{table*}[tbp]
+\centering
+\caption{Mean macro-F1 ± sample standard deviation over five seeds. Standard:
+10-epoch supervised baseline. Long: supervised baseline with similar
+planned training steps to SSL. SSL\(-\)Long: mean paired difference ±
+sample standard deviation, calculated per seed before rounding. Wins:
+number of seeds (of five) in which SSL scores strictly higher than Long.}
+\label{tbl:overall-results}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{\dimexpr 0.111\linewidth - 2\tabcolsep\relax}>{\raggedleft\arraybackslash}p{\dimexpr 0.148\linewidth - 2\tabcolsep\relax}>{\raggedleft\arraybackslash}p{\dimexpr 0.148\linewidth - 2\tabcolsep\relax}>{\raggedleft\arraybackslash}p{\dimexpr 0.148\linewidth - 2\tabcolsep\relax}>{\raggedleft\arraybackslash}p{\dimexpr 0.148\linewidth - 2\tabcolsep\relax}>{\raggedleft\arraybackslash}p{\dimexpr 0.148\linewidth - 2\tabcolsep\relax}>{\raggedleft\arraybackslash}p{\dimexpr 0.148\linewidth - 2\tabcolsep\relax}@{}}
+\toprule
+Dataset & Labels & Standard & Long & SSL & SSL\(-\)Long & Wins \\
+\midrule
+DiverseVul & 5\% & 0.005±0.002 & 0.013±0.005 & 0.009±0.005 & -0.005±0.005 & 1 \\
+DiverseVul & 10\% & 0.009±0.004 & 0.018±0.006 & 0.014±0.004 & -0.004±0.004 & 1 \\
+DiverseVul & 25\% & 0.020±0.004 & 0.025±0.005 & 0.024±0.008 & -0.001±0.006 & 3 \\
+BigVul & 5\% & 0.006±0.003 & 0.022±0.010 & 0.014±0.005 & -0.008±0.012 & 2 \\
+BigVul & 10\% & 0.012±0.006 & 0.034±0.009 & 0.021±0.004 & -0.013±0.008 & 1 \\
+BigVul & 25\% & 0.032±0.006 & 0.043±0.013 & 0.037±0.005 & -0.006±0.015 & 1 \\
+MegaVul & 5\% & 0.008±0.004 & 0.027±0.006 & 0.012±0.002 & -0.015±0.007 & 0 \\
+MegaVul & 10\% & 0.015±0.006 & 0.040±0.006 & 0.022±0.006 & -0.018±0.004 & 0 \\
+MegaVul & 25\% & 0.046±0.003 & 0.065±0.006 & 0.058±0.009 & -0.007±0.011 & 1 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\subsection{RQ1: Semi-Supervised
+vs.~Supervised}\label{rq1-semi-supervised-vs.-supervised}
+
+On DiverseVul, we observe lower mean macro-F1 for SSL than for the long
+baseline at every label budget (Table~\ref{tbl:overall-results}). The
+mean paired differences are \(-0.005\pm0.005\) at 5\%,
+\(-0.004\pm0.004\) at 10\%, and \(-0.001\pm0.006\) at 25\%. SSL wins in
+one, one, and three of five seeds. At 25\%, the difference is therefore
+very small, and SSL scores higher in most seeds. We calculate
+differences per seed before rounding, so they can differ slightly from
+differences of the rounded table values.
+
+Against the standard baseline, the mean paired differences are positive
+at every budget: \(+0.004\pm0.007\) at 5\%, \(+0.005\pm0.003\) at 10\%,
+and \(+0.005\pm0.010\) at 25\%. SSL wins in four, five, and two of five
+seeds. Only at 10\% is SSL better in every seed. At 25\%, the mean
+difference is positive, but SSL wins in only two seeds.
+
+\subsection{RQ2: Effect on Rare
+Classes}\label{rq2-effect-on-rare-classes}
+
+On DiverseVul, we observe no clear rare-class benefit against the long
+baseline. For both models, most rare test classes have zero F1, and the
+largest positive gains come from single classes in one or two seeds.
+
+Rare-class mean F1 stays at or below 0.004 for every model and budget.
+The single reference run with all training labels also scores zero on
+all 33 rare test classes; its macro-F1 is 0.031 and common-class F1 is
+0.063. Rare-class scores are therefore at the floor, which makes small
+gains hard to measure.
+
+At 5\%, the rare-class gain comes entirely from CWE-444 (48 training
+functions) in one seed: SSL F1 is 0.500 and long-baseline F1 is 0.125;
+both are zero in the other four seeds. All other 32 rare classes have
+zero gain. The largest positive rare-class gains at 10\% and 25\% are
+CWE-134 (mean gain \(+0.006\), from one seed) and CWE-327 (mean gain
+\(+0.041\), from two seeds). At 25\%, six rare classes gain and three
+lose, and SSL has a higher rare-group score in three of five seeds.
+
+\begin{table*}[tbp]
+\centering
+\caption{Mean rare-class F1 of the standard baseline (Std), long baseline, and
+SSL, and paired differences, all ± sample standard deviation over five
+seeds. Differences are SSL minus the long baseline; positive values
+favor SSL. Rare and common groups use DiverseVul training counts.}
+\label{tbl:group-results}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{\dimexpr 0.111\linewidth - 2\tabcolsep\relax}>{\raggedleft\arraybackslash}p{\dimexpr 0.148\linewidth - 2\tabcolsep\relax}>{\raggedleft\arraybackslash}p{\dimexpr 0.148\linewidth - 2\tabcolsep\relax}>{\raggedleft\arraybackslash}p{\dimexpr 0.148\linewidth - 2\tabcolsep\relax}>{\raggedleft\arraybackslash}p{\dimexpr 0.148\linewidth - 2\tabcolsep\relax}>{\raggedleft\arraybackslash}p{\dimexpr 0.148\linewidth - 2\tabcolsep\relax}>{\raggedleft\arraybackslash}p{\dimexpr 0.148\linewidth - 2\tabcolsep\relax}@{}}
+\toprule
+Dataset & Labels & Rare Std & Rare Long & Rare SSL & Rare Diff. & Common Diff. \\
+\midrule
+DiverseVul & 5\% & 0.000±0.001 & 0.001±0.002 & 0.003±0.007 & +0.002±0.005 & -0.012±0.007 \\
+DiverseVul & 10\% & 0.000±0.000 & 0.002±0.003 & 0.000±0.000 & -0.002±0.002 & -0.007±0.008 \\
+DiverseVul & 25\% & 0.002±0.001 & 0.004±0.003 & 0.004±0.003 & 0.000±0.003 & -0.002±0.011 \\
+BigVul & 5\% & 0.000±0.001 & 0.006±0.012 & 0.000±0.000 & -0.006±0.012 & -0.010±0.016 \\
+BigVul & 10\% & 0.006±0.010 & 0.022±0.016 & 0.003±0.007 & -0.019±0.012 & -0.008±0.008 \\
+BigVul & 25\% & 0.028±0.011 & 0.041±0.020 & 0.030±0.014 & -0.011±0.018 & -0.002±0.015 \\
+MegaVul & 5\% & 0.003±0.002 & 0.010±0.003 & 0.001±0.000 & -0.009±0.002 & -0.023±0.013 \\
+MegaVul & 10\% & 0.006±0.004 & 0.025±0.005 & 0.008±0.004 & -0.017±0.003 & -0.020±0.008 \\
+MegaVul & 25\% & 0.039±0.006 & 0.054±0.008 & 0.044±0.009 & -0.010±0.014 & -0.004±0.009 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+Common-class mean gains against the long baseline are negative at every
+DiverseVul budget. Against the standard baseline, common-class gains are
+positive, while rare-class gains are small.
+Figure~\ref{fig:ssl-gain-vs-long} shows per-class differences: 18, 19,
+and 15 of the 32 common classes lie below zero at the three budgets,
+while most rare classes lie on zero.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/ssl_gain_vs_long_per_class.pdf}
+\caption{Mean per-class F1 gain of SSL over the long baseline across five paired seeds on DiverseVul test. Each point is a class. The x-axis (log scale) counts all training functions in that class, including those whose labels are hidden. The dashed line marks the rare/common boundary at 50 functions. Many points lie on zero because both models have F1 = 0: 32, 26, and 24 of the 33 rare classes at 5\%, 10\%, and 25\% labels.}
+\label{fig:ssl-gain-vs-long}
+\end{figure*}
+
+Table~\ref{tbl:pseudo-quality} reports the number of selected
+pseudo-labels and their precision, which we check with the hidden
+labels. The Rare and Common columns group pseudo-labels by their
+predicted class. Most selected pseudo-labels are wrong at 5\% and 10\%
+labels. Rare-class pseudo-labels are not less precise than common ones
+at any budget.
+
+On average, 734, 708, and 660 selected pseudo-labels predict a rare
+class at the three budgets. These numbers vary strongly across seeds at
+small budgets: from 155 to 1,637 at 5\% and from 392 to 1,438 at 10\%,
+but only from 602 to 775 at 25\%.
+
+\begin{table}[tbp]
+\centering
+\caption{Selected pseudo-label counts and mean precision over five seeds. Rare
+and Common group pseudo-labels by their predicted class.}
+\label{tbl:pseudo-quality}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Labels & Selected & All & Rare & Common \\
+\midrule
+5\% & 2,180 & 0.06 & 0.11 & 0.06 \\
+10\% & 2,066 & 0.15 & 0.19 & 0.14 \\
+25\% & 1,720 & 0.35 & 0.36 & 0.35 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{RQ3: Generalization to Other
+Datasets}\label{rq3-generalization-to-other-datasets}
+
+On BigVul and MegaVul, we observe lower mean overall and rare-class F1
+for SSL than for the long baseline at every budget
+(Tables~\ref{tbl:overall-results} and~\ref{tbl:group-results}).
+Common-class mean gains against long are also negative at every budget.
+The clearest results are on MegaVul at 5\% and 10\% labels: SSL loses to
+the long baseline in all five seeds, with mean differences of
+\(-0.015\pm0.007\) and \(-0.018\pm0.004\). Across all three datasets and
+budgets, SSL beats the long baseline in 10 of 45 runs. Against the
+standard baseline, mean overall differences are positive, but rare-class
+differences vary.
+
+MegaVul at 25\% labels provides a check above the near-zero DiverseVul
+scores: rare-class F1 is 0.039 for standard, 0.054 for long, and 0.044
+for SSL. Here, SSL minus long is \(-0.010\pm0.014\), with one win in
+five seeds. We do not directly compare macro-F1 across datasets because
+their class sets differ.
+
+\section{Discussion}\label{discussion}
+
+SSL has higher mean macro-F1 than the standard baseline, but lower mean
+macro-F1 than the long baseline in all nine settings. This shows that
+the choice of baseline matters. It does not prove that extra training
+explains the SSL gains against the standard baseline, because the models
+also differ in other ways.
+
+The diagnosis explains the low absolute scores. If fine-tuning were broken, frozen CodeBERT with logistic regression would beat the fine-tuned model on the same project split. It does not: 0.016 against 0.031. A random split of the same functions gives frozen CodeBERT 0.241. TF-IDF reaches only 0.025 on the project split. The high training score and the low test score fit a model that learns the training projects and fails on new ones.
+
+Pseudo-label precision is low at small budgets
+(Table~\ref{tbl:pseudo-quality}), so most selected labels are wrong at
+5\% and 10\%. This may help explain the limited SSL results, but we did
+not test it as a cause. Mean precision across seeds is at least as high
+for predicted rare classes as for common ones at every budget. However,
+these group averages do not show whether each rare class receives enough
+correct examples.
+
+Even the single reference run trained on all labels scores zero on all
+33 rare DiverseVul test classes. These near-zero scores limit what our
+setup can tell us about rare-class gains. On BigVul and MegaVul, SSL
+also has lower mean rare-class F1 than the long baseline at every
+budget. MegaVul at 25\% is useful because rare-class scores are above
+the DiverseVul floor, yet SSL still shows no mean gain.
+
+Our study addresses the question left open by the related work: whether
+adding unlabeled data helps rare CWE classes when labels are limited. We
+find no clear rare-class benefit from this one-round pseudo-labeling
+method against the long baseline. This finding applies to our method and
+retained classes. It does not rule out gains from other SSL methods.
+
+\subsection{Threats to Validity}\label{threats-to-validity}
+
+\textbf{Internal validity.} We chose the split seed to increase
+rare-class coverage in test while keeping split sizes close to the
+planned shares. We chose the class filter and added the long baseline
+after inspecting test results. These choices can bias the results. SSL
+and the long baseline also differ in checkpoints, learning-rate
+schedules, and class weights, so we cannot say which difference causes
+the gap. We match planned training steps, not total training cost,
+because SSL also needs a separately trained teacher. We use five seeds
+and no significance tests, and many differences are smaller than the
+spread between seeds.
+We added the majority, TF-IDF, and frozen CodeBERT checks after we saw the low absolute scores. They explain that result. They were not part of the original plan.
+
+\textbf{Construct validity.} Macro-F1 gives every class the same weight,
+so classes with only a few test functions can change the score a lot.
+For 14 of the 33 rare DiverseVul test classes, all test functions come
+from just one commit per class. Rare-class F1 on DiverseVul is near zero
+for every model, even the reference model, so small gains are hard to
+measure. Our single-label rule can choose a general CWE over a more
+specific one. We also cut functions after 512 tokens, so the model may
+not see the vulnerable code.
+In the diagnosis, this cut affects 53.8\% of training functions and 71.1\% of test functions.
+
+\textbf{External validity.} We test one model (CodeBERT), one SSL method
+(one round, top 20\%), and one training dataset. Other models or SSL
+methods may give different results. Our unlabeled pool contains only
+vulnerable functions from known classes and training projects, which is
+a favorable setting for SSL. Real unlabeled code also contains
+non-vulnerable functions. On BigVul and MegaVul, 16--19\% of functions
+come from DiverseVul training projects, and we removed only exact
+copies, so RQ3 does not fully test unseen projects.
+
+\subsection{Future Work}\label{future-work}
+
+Future work could select pseudo-labels by class, as in CReST
+\cite{wei2021crest}, or test the long baseline as an alternative
+teacher. It could also test an unlabeled pool that includes
+non-vulnerable code. These ideas need evaluation; none is a proven fix
+for this task.
+
+\section{Conclusion}\label{conclusion}
+
+We compared one round of pseudo-labeling with supervised CodeBERT
+training on the same small labeled sets from DiverseVul. We then tested
+the supervised baselines and SSL models on BigVul and MegaVul without
+further training or tuning.
+
+On the same project split, majority-class, TF-IDF, and frozen CodeBERT baselines are also low, at 0.002, 0.025, and 0.016 test macro-F1. Frozen CodeBERT reaches 0.241 on a random split. The all-labels model fits the training data but still scores 0.031 on test. We therefore tie the low absolute scores mainly to the project-wise split.
+
+For RQ1, SSL has lower mean macro-F1 than the long baseline at every
+DiverseVul label budget. The differences are small, from \(-0.005\) to
+\(-0.001\), and at 25\% labels SSL wins in three of five seeds. Against
+the standard baseline, SSL has a higher mean at every budget.
+
+For RQ2, we observe no clear rare-class benefit against the long
+baseline. On DiverseVul, mean rare-class F1 across seeds is at or below
+0.004 for every model and budget, and even the reference model trained
+on all labels scores zero on all 33 rare test classes. This floor limits
+what DiverseVul alone can tell us about rare classes.
+
+For RQ3, SSL has lower mean macro-F1 and lower mean rare-class F1 than
+the long baseline in all six BigVul and MegaVul settings. On MegaVul at
+25\% labels, rare-class scores are above the DiverseVul floor, and SSL
+still has lower mean rare-class F1 than the long baseline
+(\(-0.010\pm0.014\), one win in five seeds).
+
+These results apply to one model (CodeBERT), one SSL method (one round,
+top 20\%), one training dataset, and our retained classes. They do not
+rule out gains from other SSL methods.
+
+The main lesson of this study concerns evaluation. In our study, SSL had
+higher mean macro-F1 than the 10-epoch baseline but lower mean macro-F1
+than a supervised baseline with similar planned training steps. We
+therefore recommend that future SSL studies on vulnerability data also
+report a supervised baseline with similar planned training steps.
+When absolute scores are near the floor, they should also report a simple split check, so readers can tell a hard split from a failed training run.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
